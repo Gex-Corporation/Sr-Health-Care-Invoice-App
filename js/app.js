@@ -2010,7 +2010,7 @@ async function openHistory(isNext = false) {
     }
 }
 
-function loadInvoiceUI(e) {
+function loadInvoiceUI(e, keepAdminModalOpen = false) {
     if (!e) return; 
     document.getElementById('companyDetails').value = e.companyDetails || ''; 
     document.getElementById('invoiceNumber').value = e.invoiceNumber || ''; 
@@ -2031,7 +2031,11 @@ function loadInvoiceUI(e) {
     document.getElementById('discountPercent').value = e.discountPercent || 0;
     const tbody = document.getElementById('invoiceBody'); tbody.innerHTML = '';
     if (e.items && Array.isArray(e.items)) { e.items.forEach(item => { addInvoiceRow(); const row = tbody.lastElementChild; row.querySelector('.product-name').value = item.name || ''; row.querySelector('.qty').value = item.qty || 1; row.querySelector('.rate').value = item.rate || 0; calculateRow(row.querySelector('.rate')); }); }
-    document.getElementById('historyModal').style.display = 'none'; document.getElementById('adminModal').style.display = 'none'; autoResize(document.getElementById('companyDetails'));
+    document.getElementById('historyModal').style.display = 'none'; 
+    if (!keepAdminModalOpen) {
+        document.getElementById('adminModal').style.display = 'none'; 
+    }
+    autoResize(document.getElementById('companyDetails'));
 }
 
 async function showProducts() {
@@ -3488,13 +3492,15 @@ window.updateAccountingField = async (userId, field, currentVal) => {
 async function directPrintInvoice(invoiceData) {
     if (!invoiceData) return;
     const originalUser = document.getElementById('usernameDisplay').textContent;
+    const adminModalDisplay = document.getElementById('adminModal').style.display; // Remember if admin modal was open
     try {
         document.getElementById('usernameDisplay').textContent = invoiceData.user || 'Unknown';
-        loadInvoiceUI(invoiceData);
+        loadInvoiceUI(invoiceData, true); // Pass true to keep admin modal open
         openPrintDialog(() => {
             document.getElementById('usernameDisplay').textContent = originalUser;
+            document.getElementById('adminModal').style.display = adminModalDisplay; // Restore admin modal state
         });
-    } catch (e) { alert("Print failed!"); document.getElementById('usernameDisplay').textContent = originalUser; }
+    } catch (e) { alert("Print failed!"); document.getElementById('usernameDisplay').textContent = originalUser; document.getElementById('adminModal').style.display = adminModalDisplay; }
 }
 
 // ==================== DOMAIN LOCK SYSTEM ====================
