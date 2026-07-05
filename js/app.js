@@ -45,7 +45,7 @@ const APP_HTML = `
                 <div class="bill-ship-section">
                     <div class="meta-row suggestion-relative">
                         <label>Bill To:</label>
-                        <textarea id="billTo" placeholder="Name, Address" rows="2" autocomplete="off"></textarea>
+                        <textarea id="billTo" placeholder="Shop & Owner Name" rows="2" autocomplete="off"></textarea>
                         <div id="customerSuggestions" class="suggestion-box no-print"></div>
                     </div>
                     <div class="meta-row">
