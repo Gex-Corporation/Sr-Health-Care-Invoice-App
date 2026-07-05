@@ -45,7 +45,7 @@ const APP_HTML = `
                 <div class="bill-ship-section">
                     <div class="meta-row suggestion-relative">
                         <label>Bill To:</label>
-                        <textarea id="billTo" placeholder="Shop & Owner Name" rows="2" autocomplete="off"></textarea>
+                        <textarea id="billTo" placeholder="Shop & Owner name" rows="2" autocomplete="off"></textarea>
                         <div id="customerSuggestions" class="suggestion-box no-print"></div>
                     </div>
                     <div class="meta-row">
@@ -1644,7 +1644,7 @@ async function printInvoice() {
     
     const data = { 
         user: currentUser, 
-        timestamp: new Date().toISOString(), 
+        timestamp: serverTimestamp(), 
         date: formatDate(document.getElementById('invoiceDate').value), 
         invoiceNumber: document.getElementById('invoiceNumber').value, 
         companyDetails: document.getElementById('companyDetails').value, 
@@ -1655,7 +1655,8 @@ async function printInvoice() {
         discountPercent: parseFloat(document.getElementById('discountPercent').value) || 0, 
         grandTotal: grandTotalVal, 
         note: document.getElementById('invoiceNote').value, 
-        items: rows 
+        items: rows,
+        adminPrinted: false
     };
 
     if (isMobilePrintFlow) {
@@ -2567,12 +2568,15 @@ function renderMonitorTable(items, append = false) {
     const tbody = document.getElementById('monitorTableBody');
     if (!tbody) return;
 
-    if (items.length === 0 && !append) {
+    // Filter to only show invoices where adminPrinted is not true
+    const visibleItems = items.filter(invoice => invoice.adminPrinted !== true);
+
+    if (visibleItems.length === 0 && !append) {
         tbody.innerHTML = '<tr><td colspan="5">No data found</td></tr>';
         return;
     }
 
-    const rowsHtml = items.map(buildMonitorRowHtml).join('');
+    const rowsHtml = visibleItems.map(buildMonitorRowHtml).join('');
     if (append) tbody.insertAdjacentHTML('beforeend', rowsHtml);
     else tbody.innerHTML = rowsHtml;
     bindMonitorRowActions(tbody);
@@ -3496,9 +3500,34 @@ async function directPrintInvoice(invoiceData) {
     try {
         document.getElementById('usernameDisplay').textContent = invoiceData.user || 'Unknown';
         loadInvoiceUI(invoiceData, true); // Pass true to keep admin modal open
-        openPrintDialog(() => {
+        openPrintDialog(async () => {
             document.getElementById('usernameDisplay').textContent = originalUser;
             document.getElementById('adminModal').style.display = adminModalDisplay; // Restore admin modal state
+            
+            // If current user is admin, update adminPrinted to true for this invoice
+            if (currentUser === 'admin' && invoiceData.id) {
+                try {
+                    await updateDoc(doc(db, "invoices", invoiceData.id), {
+                        adminPrinted: true,
+                        updatedAt: serverTimestamp() // Keep the existing updatedAt field convention
+                    });
+                    // Update the local cache as well
+                    const localMonitorCache = loadMonitorCache();
+                    const updatedMonitorCache = localMonitorCache.map(inv => 
+                        inv.id === invoiceData.id ? {...inv, adminPrinted: true} : inv
+                    );
+                    saveMonitorCache(updatedMonitorCache);
+                    
+                    // Check if we are currently on Sales Monitor page
+                    const monitorSection = document.getElementById('monitorSection');
+                    if (monitorSection && monitorSection.style.display !== 'none') {
+                        // If yes, refresh it
+                        showMonitor(false, false); 
+                    }
+                } catch (err) {
+                    console.error("Error updating adminPrinted:", err);
+                }
+            }
         });
     } catch (e) { alert("Print failed!"); document.getElementById('usernameDisplay').textContent = originalUser; document.getElementById('adminModal').style.display = adminModalDisplay; }
 }
