@@ -45,7 +45,7 @@ const APP_HTML = `
                 <div class="bill-ship-section">
                     <div class="meta-row suggestion-relative">
                         <label>Bill To:</label>
-                        <textarea id="billTo" placeholder="Name, Address" rows="2" autocomplete="off"></textarea>
+                        <textarea id="billTo" placeholder="Shop & Owner name" rows="2" autocomplete="off"></textarea>
                         <div id="customerSuggestions" class="suggestion-box no-print"></div>
                     </div>
                     <div class="meta-row">
@@ -523,6 +523,7 @@ const SELL_HISTORY_PAGE_SIZE = 10;
 const SELL_HISTORY_CACHE_MAX = 10;
 const USER_SALES_HISTORY_INITIAL_PAGE_SIZE = 15;
 const USER_SALES_HISTORY_LOAD_MORE_SIZE = 10;
+const ADMIN_USER_SALES_CACHE_MAX = 50;
 let currentDetailUserId = null; // To track which user is being viewed in detail
 let deleteNotifPollInterval = null;
 let sellHistoryLastDoc = null;
@@ -744,12 +745,21 @@ function invalidateMonitorCache() {
 }
 
 function getInvoiceSortTime(inv) {
-    const t = inv?.timestamp || inv?.date;
-    const ms = Date.parse(t);
+    let t;
+    if (inv?.timestamp?.toMillis) {
+        t = inv.timestamp.toMillis();
+    } else if (inv?.timestamp?.seconds != null) {
+        t = inv.timestamp.seconds * 1000;
+    } else {
+        t = inv?.timestamp || inv?.date;
+    }
+    const ms = typeof t === 'number' ? t : Date.parse(t);
     return isNaN(ms) ? 0 : ms;
 }
 
 function getMonitorUpdatedAtMs(inv) {
+    if (inv?.timestamp?.toMillis) return inv.timestamp.toMillis();
+    if (inv?.timestamp?.seconds != null) return inv.timestamp.seconds * 1000;
     if (inv?.updatedAt?.toMillis) return inv.updatedAt.toMillis();
     if (inv?.updatedAt?.seconds != null) return inv.updatedAt.seconds * 1000;
     return getInvoiceSortTime(inv);
@@ -973,7 +983,8 @@ async function syncUserSalesIncremental(userId) {
 
         const updates = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         const mergedCache = mergeMonitorItems(currentCache, updates);
-        localStorage.setItem(cacheKey, JSON.stringify(mergedCache));
+        const sortedCache = sortSellHistoryCache(mergedCache).slice(0, ADMIN_USER_SALES_CACHE_MAX);
+        localStorage.setItem(cacheKey, JSON.stringify(sortedCache));
         return true;
     } catch (e) {
         if (e.code !== 'failed-precondition' && e.code !== 'invalid-argument') {
@@ -1644,7 +1655,7 @@ async function printInvoice() {
     
     const data = { 
         user: currentUser, 
-        timestamp: new Date().toISOString(), 
+        timestamp: serverTimestamp(), 
         date: formatDate(document.getElementById('invoiceDate').value), 
         invoiceNumber: document.getElementById('invoiceNumber').value, 
         companyDetails: document.getElementById('companyDetails').value, 
@@ -1655,7 +1666,8 @@ async function printInvoice() {
         discountPercent: parseFloat(document.getElementById('discountPercent').value) || 0, 
         grandTotal: grandTotalVal, 
         note: document.getElementById('invoiceNote').value, 
-        items: rows 
+        items: rows,
+        adminPrinted: false
     };
 
     if (isMobilePrintFlow) {
@@ -1976,20 +1988,20 @@ async function openHistory(isNext = false) {
         }
 
         snap.forEach(d => { 
-            const e = d.data();
-            const json = encodeURIComponent(JSON.stringify({...e, id: d.id})); 
-            const row = document.createElement('tr');
-            row.innerHTML = `
-                <td>${e.date}</td>
-                <td>${e.invoiceNumber}</td>
-                <td>${e.currency}${e.grandTotal}</td>
-                <td>
-                    <button class="btn btn-primary btn-sm load-inv" data-json="${json}">View</button>
-                    ${currentUser === 'admin' ? `<button class="btn btn-danger btn-sm del-inv" data-id="${d.id}">Delete</button>` : ''}
-                 </td>
-            `;
-            tableBody.appendChild(row);
-        });
+        const e = d.data();
+        const json = encodeURIComponent(JSON.stringify({...e, id: d.id})); 
+        const row = document.createElement('tr');
+        row.innerHTML = `
+            <td>${formatDateTimeBD(e)}</td>
+            <td>${e.invoiceNumber}</td>
+            <td>${e.currency}${e.grandTotal}</td>
+            <td>
+                <button class="btn btn-primary btn-sm load-inv" data-json="${json}">View</button>
+                ${currentUser === 'admin' ? `<button class="btn btn-danger btn-sm del-inv" data-id="${d.id}">Delete</button>` : ''}
+             </td>
+        `;
+        tableBody.appendChild(row);
+    });
 
         // Bind events for rows
         tableBody.querySelectorAll('.load-inv').forEach(b => b.onclick = () => loadInvoiceUI(JSON.parse(decodeURIComponent(b.dataset.json))));
@@ -2015,14 +2027,28 @@ function loadInvoiceUI(e, keepAdminModalOpen = false) {
     document.getElementById('companyDetails').value = e.companyDetails || ''; 
     document.getElementById('invoiceNumber').value = e.invoiceNumber || ''; 
     const dateInput = document.getElementById('invoiceDate');
-    dateInput.value = formatDate(e.date) || ''; 
-    const d = new Date(e.date);
-    if (!isNaN(d.getTime())) {
+    
+    // Get date from timestamp first, then fall back to date field
+    let d;
+    if (e.timestamp?.toMillis) {
+        d = new Date(e.timestamp.toMillis());
+    } else if (e.timestamp) {
+        d = new Date(e.timestamp);
+    } else if (e.date) {
+        d = new Date(e.date);
+    }
+    
+    if (d && !isNaN(d.getTime())) {
         const yyyy = d.getFullYear();
         const mm = String(d.getMonth() + 1).padStart(2, '0');
         const dd = String(d.getDate()).padStart(2, '0');
         dateInput.setAttribute('data-raw', `${yyyy}-${mm}-${dd}`);
+        dateInput.value = formatDate(`${yyyy}-${mm}-${dd}`);
+    } else {
+        dateInput.value = '';
+        dateInput.removeAttribute('data-raw');
     }
+    
     document.getElementById('phoneField').value = e.phone || ''; 
     document.getElementById('billTo').value = e.billTo || ''; 
     document.getElementById('shipTo').value = e.shipTo || ''; 
@@ -2407,23 +2433,26 @@ async function loadUserSalesHistory(userId, forceRefresh = false, isLoadMore = f
             const cached = localStorage.getItem(cacheKey);
             if (cached && !forceRefresh) {
                 const parsed = JSON.parse(cached);
-                userSalesHistoryCache = sortSellHistoryCache(parsed);
+                userSalesHistoryCache = sortSellHistoryCache(parsed).slice(0, ADMIN_USER_SALES_CACHE_MAX);
                 renderUserSalesHistory(userSalesHistoryCache.slice(0, USER_SALES_HISTORY_INITIAL_PAGE_SIZE), false);
                 userSalesHistoryHasMore = userSalesHistoryCache.length > USER_SALES_HISTORY_INITIAL_PAGE_SIZE;
                 updateUserSalesHistoryLoadMoreButton();
+            }
 
-                // Check if versions changed and do incremental sync
-                if (await monitorSalesVersionsChanged()) {
-                    const changed = await syncUserSalesIncremental(userId);
-                    await syncLocalMonitorVersionsFromServer();
-                    if (changed) {
-                        const refreshed = JSON.parse(localStorage.getItem(cacheKey) || '[]');
-                        userSalesHistoryCache = sortSellHistoryCache(refreshed);
-                        renderUserSalesHistory(userSalesHistoryCache.slice(0, USER_SALES_HISTORY_INITIAL_PAGE_SIZE), false);
-                        userSalesHistoryHasMore = userSalesHistoryCache.length > USER_SALES_HISTORY_INITIAL_PAGE_SIZE;
-                        updateUserSalesHistoryLoadMoreButton();
-                    }
+            // Always check if versions changed and do incremental sync
+            if (await monitorSalesVersionsChanged()) {
+                const changed = await syncUserSalesIncremental(userId);
+                await syncLocalMonitorVersionsFromServer();
+                if (changed) {
+                    const refreshed = JSON.parse(localStorage.getItem(cacheKey) || '[]');
+                    userSalesHistoryCache = sortSellHistoryCache(refreshed).slice(0, ADMIN_USER_SALES_CACHE_MAX);
+                    renderUserSalesHistory(userSalesHistoryCache.slice(0, USER_SALES_HISTORY_INITIAL_PAGE_SIZE), false);
+                    userSalesHistoryHasMore = userSalesHistoryCache.length > USER_SALES_HISTORY_INITIAL_PAGE_SIZE;
+                    updateUserSalesHistoryLoadMoreButton();
                 }
+            }
+            
+            if (cached && !forceRefresh) {
                 return;
             }
         }
@@ -2465,11 +2494,14 @@ async function fetchUserSalesFromServer(userId, isLoadMore = false) {
         
         if (isLoadMore) {
             userSalesHistoryCache = [...userSalesHistoryCache, ...sortedNewData];
+            const sortedCache = sortSellHistoryCache(userSalesHistoryCache).slice(0, ADMIN_USER_SALES_CACHE_MAX);
+            userSalesHistoryCache = sortedCache;
+            localStorage.setItem(cacheKey, JSON.stringify(userSalesHistoryCache));
             renderUserSalesHistory(sortedNewData, true);
         } else {
-            userSalesHistoryCache = sortedNewData;
+            userSalesHistoryCache = sortSellHistoryCache(sortedNewData).slice(0, ADMIN_USER_SALES_CACHE_MAX);
             localStorage.setItem(cacheKey, JSON.stringify(userSalesHistoryCache));
-            renderUserSalesHistory(sortedNewData, false);
+            renderUserSalesHistory(userSalesHistoryCache, false);
         }
         
         userSalesHistoryLastDoc = snap.docs.length > 0 ? snap.docs[snap.docs.length - 1] : null;
@@ -2567,12 +2599,15 @@ function renderMonitorTable(items, append = false) {
     const tbody = document.getElementById('monitorTableBody');
     if (!tbody) return;
 
-    if (items.length === 0 && !append) {
+    // Filter to only show invoices where adminPrinted is not true
+    const visibleItems = items.filter(invoice => invoice.adminPrinted !== true);
+
+    if (visibleItems.length === 0 && !append) {
         tbody.innerHTML = '<tr><td colspan="5">No data found</td></tr>';
         return;
     }
 
-    const rowsHtml = items.map(buildMonitorRowHtml).join('');
+    const rowsHtml = visibleItems.map(buildMonitorRowHtml).join('');
     if (append) tbody.insertAdjacentHTML('beforeend', rowsHtml);
     else tbody.innerHTML = rowsHtml;
     bindMonitorRowActions(tbody);
@@ -3300,7 +3335,7 @@ function buildSellHistoryRowHtml(e, pendingIds) {
         ? '<button class="btn btn-secondary btn-sm" disabled>Pending</button>'
         : `<button class="btn btn-danger btn-sm del-inv-user" data-id="${e.id}">Delete</button>`;
     return `<tr>
-        <td>${e.date || ''}</td>
+        <td>${formatDateTimeBD(e)}</td>
         <td>${e.invoiceNumber || ''}</td>
         <td>${e.currency || ''}${e.grandTotal || '0'}</td>
         <td>${statusHtml}</td>
@@ -3496,9 +3531,34 @@ async function directPrintInvoice(invoiceData) {
     try {
         document.getElementById('usernameDisplay').textContent = invoiceData.user || 'Unknown';
         loadInvoiceUI(invoiceData, true); // Pass true to keep admin modal open
-        openPrintDialog(() => {
+        openPrintDialog(async () => {
             document.getElementById('usernameDisplay').textContent = originalUser;
             document.getElementById('adminModal').style.display = adminModalDisplay; // Restore admin modal state
+            
+            // If current user is admin, update adminPrinted to true for this invoice
+            if (currentUser === 'admin' && invoiceData.id) {
+                try {
+                    await updateDoc(doc(db, "invoices", invoiceData.id), {
+                        adminPrinted: true,
+                        updatedAt: serverTimestamp() // Keep the existing updatedAt field convention
+                    });
+                    // Update the local cache as well
+                    const localMonitorCache = loadMonitorCache();
+                    const updatedMonitorCache = localMonitorCache.map(inv => 
+                        inv.id === invoiceData.id ? {...inv, adminPrinted: true} : inv
+                    );
+                    saveMonitorCache(updatedMonitorCache);
+                    
+                    // Check if we are currently on Sales Monitor page
+                    const monitorSection = document.getElementById('monitorSection');
+                    if (monitorSection && monitorSection.style.display !== 'none') {
+                        // If yes, refresh it
+                        showMonitor(false, false); 
+                    }
+                } catch (err) {
+                    console.error("Error updating adminPrinted:", err);
+                }
+            }
         });
     } catch (e) { alert("Print failed!"); document.getElementById('usernameDisplay').textContent = originalUser; document.getElementById('adminModal').style.display = adminModalDisplay; }
 }
